@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 WiFi 同步配置</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: sans-serif; }
+        body { background: #f5f5f5; padding: 20px; max-width: 400px; margin: 0 auto; }
+        .card { background: white; border-radius: 12px; padding: 30px 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); margin-top: 50px; }
+        h2 { text-align: center; color: #333; margin-bottom: 30px; }
+        .form-item { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 8px; color: #555; font-size: 15px; }
+        input { width: 100%; padding: 12px 15px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; }
+        input:focus { outline: none; border-color: #007bff; }
+        button { width: 100%; padding: 14px; background: #007bff; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; margin-top: 10px; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .status { text-align: center; margin-top: 20px; font-size: 14px; padding: 10px; border-radius: 8px; }
+        .success { color: green; background: #f1f8e9; }
+        .error { color: red; background: #ffebee; }
+        .info { color: #666; background: #f5f5f5; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>ESP32 WiFi 同步配置</h2>
+        <form id="wifiForm">
+            <div class="form-item">
+                <label for="ssid">WiFi 名称 (SSID)</label>
+                <input type="text" id="ssid" required placeholder="请输入WiFi名称">
+            </div>
+            <div class="form-item">
+                <label for="password">WiFi 密码</label>
+                <input type="password" id="password" placeholder="无密码请留空">
+            </div>
+            <button type="submit" id="submitBtn">同步到ESP32</button>
+            <div class="status info" id="status">未连接蓝牙，等待同步...</div>
+        </form>
+    </div>
+
+    <script>
+        // 蓝牙通信（实时同步配置到ESP32）
+        let bleDevice = null;
+        let bleCharacteristic = null;
+        // BLE UUID（和ESP32代码一致）
+        const SERVICE_UUID = "0000ffe0-0000-1000-8000-00805f9b34fb";
+        const CHAR_UUID = "0000ffe1-0000-1000-8000-00805f9b34fb";
+
+        // 页面加载自动连接蓝牙（准备同步）
+        window.addEventListener('load', async () => {
+            const status = document.getElementById('status');
+            if (!navigator.bluetooth) {
+                status.className = "status error";
+                status.textContent = "错误：浏览器不支持蓝牙（需Chrome/Edge）";
+                return;
+            }
+            try {
+                status.textContent = "正在搜索ESP32蓝牙设备...";
+                // 搜索并连接ESP32
+                bleDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ namePrefix: 'ESP32-WiFi-Setup' }],
+                    optionalServices: [SERVICE_UUID]
+                });
+                // 连接GATT服务器（同步通道）
+                const server = await bleDevice.gatt.connect();
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                bleCharacteristic = await service.getCharacteristic(CHAR_UUID);
+                
+                // 监听ESP32的同步反馈
+                bleCharacteristic.addEventListener('characteristicvaluechanged', (e) => {
+                    const msg = new TextDecoder().decode(e.target.value);
+                    status.textContent = `ESP32反馈：${msg}`;
+                    status.className = msg.includes('成功') ? "status success" : "status error";
+                    // 恢复按钮
+                    document.getElementById('submitBtn').disabled = false;
+                    document.getElementById('submitBtn').textContent = "同步到ESP32";
+                });
+                await bleCharacteristic.startNotifications();
+
+                status.className = "status success";
+                status.textContent = "蓝牙已连接，可同步WiFi配置";
+            } catch (err) {
+                status.className = "status error";
+                status.textContent = `蓝牙连接失败：${err.message}`;
+            }
+        });
+
+        // 表单提交（同步配置到ESP32）
+        document.getElementById('wifiForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const ssid = document.getElementById('ssid').value.trim();
+            const password = document.getElementById('password').value.trim();
+            const submitBtn = document.getElementById('submitBtn');
+            const status = document.getElementById('status');
+
+            if (!bleCharacteristic) {
+                status.className = "status error";
+                status.textContent = "错误：未连接ESP32蓝牙，无法同步";
+                return;
+            }
+            if (!ssid) {
+                status.className = "status error";
+                status.textContent = "错误：WiFi名称不能为空（同步失败）";
+                return;
+            }
+
+            // 禁用按钮，开始同步
+            submitBtn.disabled = true;
+            submitBtn.textContent = "同步中...";
+            status.className = "status info";
+            status.textContent = `正在将配置同步到ESP32：${ssid}`;
+
+            try {
+                // 发送JSON配置（实时同步到ESP32）
+                const config = JSON.stringify({ ssid, password });
+                await bleCharacteristic.writeValue(new TextEncoder().encode(config));
+                status.textContent = "配置已发送，等待ESP32连接反馈...";
+            } catch (err) {
+                status.className = "status error";
+                status.textContent = `同步失败：${err.message}`;
+                submitBtn.disabled = false;
+                submitBtn.textContent = "重新同步";
+            }
+        });
+    </script>
+</body>
+</html>
